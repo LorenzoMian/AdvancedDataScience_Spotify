@@ -1,0 +1,556 @@
+---
+title: "Analisi dei successi musicali su Spotify"
+author: "Lorenzon Mian"
+date: "2024-03-01"
+output: ioslides_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(wordcloud)
+library(ggraph)
+library(tidygraph)
+library(ggrepel)
+library(igraph)
+
+suppressMessages(library(tm))
+```
+
+## Argomenti trattati
+
+-   Il dataset
+
+-   Storia
+
+-   Brani
+
+-   Artisti
+
+-   Caratteristiche acustiche
+
+-   Analisi lessicale
+
+-   Grafo delle collaborazioni
+
+-   Conclusioni
+
+# Il dataset
+
+## Fonte dei dati
+
+Il dataset preso in esame contiene le informazioni riguardanti le canzoni Più ascoltate su una delle piattaforme di streaming Più utilizzate al mondo: Spotify. \
+Per ognuna di essere sono presenti alcune caratteristiche acustiche del brano, gli artisti e il titolo e la presenza sulle altre piattaforme.\
+Le informazioni sono aggiornate ad Agosto 2023, data di pubblicazione del dataset su Kaggle.\
+
+Il dataset è reperibile al seguente indirizzo: [https://www.kaggle.com/datasets/nelgiriyewithana/top-spotify-songs-2023](#0){.uri})
+
+## Le informazioni principali
+
+-   Nome della traccia e artisti presenti
+-   Numero di artisti
+-   Data di uscita
+-   Numero di streams su Spotify
+-   Numero di presenze in classifiche e playlist di Spotify
+-   Numero di presenze in classifiche e playlist di Apple Music
+-   Numero di presenze in classifiche e playlist di Deezer
+-   Numero di presenze in classifiche di Shazam
+-   Bpm, Chiave, Modo e Caratteristiche espressive
+
+```{r}
+# importo il dataset e pulisco alcuni dati 
+file_path <- "spotify-2023.csv"
+suppressWarnings( # disabilito warning sulla conversione da stringa ad intero dato che vado ad eliminare le righe non correttamente formattate
+data <- read.csv(file_path) %>%
+  mutate_if(is.character, utf8::utf8_encode) %>%
+  mutate(streams_int = as.integer(streams)) %>%
+  filter(!is.na(streams_int)) %>%
+  select(-streams) %>%
+  rename(streams = streams_int)
+)
+
+#definisco i nomi delle colonne in cui suddividere la colonna artist.s._name
+artists_col_names = c("artist1", "artist2", "artist3", "artist4", "artist5", "artist6", "artist7", "artist8")
+
+suppressWarnings( # disabilito il warining degli oggetti mancanti del comando separate
+artists_colab <- data %>%
+  select(artist.s._name, streams, artist_count) %>%
+  separate(artist.s._name, into = artists_col_names, sep=", ", remove= TRUE) %>%
+  mutate(count = rowSums(!is.na(.[(1:8)]))) %>% 
+  mutate(Error = if_else(artist_count != count, TRUE, FALSE))
+)
+
+# controllo che la suddivisione sia stata effettuata correttamente
+
+if(any(isTRUE(artists_colab$Error)))
+   stop("Errore durante la suddivisione degli artisti")
+# ho così generato una tabella in cui vengono divisi in varie colonne gli artisti
+artists_colab  <- artists_colab %>% select(-artist_count, -count, -Error)
+```
+
+## Prime analisi
+
+Alcune informazioni generali sul dataset:\
+
+```{r}
+cat("Sono presenti", count(data)[1,1], "canzoni")
+```
+
+```{r}
+artists <- artists_colab %>%
+  pivot_longer(all_of(artists_col_names)) %>%
+  filter(!is.na(value)) %>%
+  distinct(value)
+
+cat("Sono presenti", nrow(artists), "artisti diversi")
+```
+
+```{r}
+cat("I brani presenti sono usciti in un periodo che va dal",
+  data %>%
+  select(released_year) %>%
+  min(),
+  "al",
+  data %>%
+  select(released_year) %>%
+  max()
+)
+```
+```{r}
+numero <- data %>%
+  select(streams) %>%
+  max()
+suppressWarnings(
+  cat("Il brano con più ascolti ne conta ben", format(numero, big.mark = "."))
+)
+```
+
+# La storia
+
+## Anno di uscita delle canzoni
+
+```{r}
+# istogramma che rappresenta il numero di canzoni presenti nel dataset per anno di uscita
+histogram_songs_year <- ggplot(data = data, aes(x = released_year)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black", alpha = 0.7) + 
+  labs(x = "anno di uscita", y = "# brani in classifica") +
+  scale_x_continuous(breaks = seq(1925, 2025, by = 5)) +
+  scale_y_continuous(breaks = seq(0, 500, by = 50)) +
+  theme_light()
+
+histogram_songs_year
+```
+
+## Streams per canzone
+
+```{r}
+scatter_streaming_year <- ggplot(data = data, aes(x = released_year, y = streams)) +
+  geom_point() +
+  labs(x = "anno di uscita", y = "streams") +
+  scale_x_continuous(breaks = seq(1925, 2025, by = 10)) +
+  theme_light()
+
+scatter_streaming_year
+```
+
+## Considerazioni
+
+```{r}
+# anno di moda
+mode_year <- data %>% 
+  group_by(released_year) %>% 
+  summarise("n" = n()) %>% 
+  top_n(n = 1, wt=n)
+cat("L'anno con il maggior numero di brani è il", mode_year$released_year, "con ben", mode_year$n, "brani")
+```
+
+```{r}
+# tendenza crescente ad eccezione di...
+bad_year <- data %>% 
+  group_by(released_year) %>% 
+  summarise("n" = n()) %>% 
+  filter(released_year > 2015) %>%
+  arrange(n) %>%
+  head(1)
+cat("Il numero di brani cresce al crescere del tempo")
+cat("Fa eccezzione l'anno", bad_year$released_year, "con solo", bad_year$n, "brani")
+```
+
+```{r}
+# Calcolo correlazione
+correlation_streaming_year <- cor(
+    data %>% select(streams, released_year) 
+)
+cat("Correlazione tra anno di uscita e numero di visualizzazioni:", round( correlation_streaming_year[1, 2], digits = 4))
+```
+
+# Brani
+
+## I 10 brani più ascoltati
+
+```{r}
+title_re = "\\([^\\(]*\\)|\\s*-.*"
+
+top10_songs <- data %>%
+  arrange(desc(streams)) %>%
+  head(10) %>%
+  select("Titolo" = track_name, 
+         "Artisti" = artist.s._name, 
+         "Anno" = released_year, 
+         "Streams" = streams) %>%
+  mutate(Titolo = str_replace_all(Titolo, title_re, "")) %>%
+  mutate(Artisti = str_replace_all(Artisti, "Ray Dalton, Ryan Lewis,", ""))
+top10_songs
+```
+
+## Presenza nelle playlist
+
+```{r}
+# Per ognuna di esse cerco in quante playlist compare nei principali servizi di streaming
+top10_songs_playlist <- data %>%
+  arrange(desc(streams)) %>%
+  head(10) %>%
+  mutate(deezer = as.integer(str_remove(in_deezer_playlists, "\\,"))) %>%
+  mutate(pos = c(1:10)) %>%
+  select("Titolo" = track_name, 
+         "Spotify" = in_spotify_playlists, 
+         "Deezer" = deezer, 
+         "Apple" = in_apple_playlists, pos) %>%
+  mutate(Titolo = str_replace_all(Titolo, title_re, "")) %>%
+  pivot_longer(cols = c(Spotify, Deezer, Apple), names_to = "Playlist", values_to = "n")
+
+# Grafico a barre della preneza nelle playlist dei Più comuni servizi di streaming
+#(scala logaritmica dato dal grande numero di pllaylist in Spotify)
+bar_top10_playlist <- ggplot(top10_songs_playlist, aes(x = reorder(Titolo, pos), y = n, fill = Playlist)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "", y = "streams (log)") +
+  scale_y_continuous(trans = "log10")
+
+bar_top10_playlist
+
+```
+
+# Artisti
+
+## I 10 artisti più presenti
+```{r}
+# Cerco i 10 cantanti che compaiono Più spesso nel dataset, osservando il numero
+# di canzoni in cui sono il main artist e quelle in cui compaiono come featuring.
+
+top10_artist <- artists_colab %>%
+  pivot_longer(all_of(artists_col_names)) %>%
+  filter(!is.na(value)) %>%
+  group_by(value) %>%
+  summarize(main_artist = sum(ifelse(name == "artist1", 1, 0)), 
+            featuring_artist = sum(ifelse(name != "artist1", 1, 0)),
+            total_streamings = sum(streams)) %>%
+  mutate(total_artist = main_artist + featuring_artist) %>%
+  arrange(desc(total_artist)) %>%
+  select("Artista" = value, 
+         "Principale" = main_artist, 
+         "Featuring" = featuring_artist, 
+         "Totale" = total_artist,
+         "Ascolti_totali" = total_streamings ) %>%
+  head(10)
+as.data.frame(top10_artist)
+```
+
+## Numero di artisti per brano
+
+```{r}
+# Nell'intero dataset, raggruppo per numero di artisti presenti nel brano, calcolandone
+# il numero medio di ascolti
+
+streams_n_artists <- data %>%
+  mutate(artist_count = ifelse(artist_count > 3, 0, artist_count )) %>%
+  mutate(artist_count = as.character(artist_count)) %>%
+  mutate(artist_count = ifelse(artist_count == "0", "Più di 4", artist_count )) %>%
+  select(artist_count, streams) %>%
+  group_by(artist_count) %>%
+  summarize(mean = mean(streams, na.rm = TRUE), count = n()) %>%
+  select("N_artisti" = artist_count, "Ascolti_medi" = mean, "n" = "count")
+
+# Grafico a torta che rappresenta il numero di artisti in ogni brano del dataset
+perc_artists <- streams_n_artists %>%
+  mutate(n = n/sum(n)*100) 
+
+pie_n_artists <- ggplot(perc_artists, aes(x = "", y = n, fill = N_artisti)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  labs( fill = "# artisti", x = "", y = "") +
+  geom_text(aes(label = paste(round(n), "%")), # position = position_dodge(width = 0.05)) +
+            position = position_stack(vjust = .5),
+            vjust = -2.5) +
+  theme_void()
+
+pie_n_artists
+
+cat("La media è di", round(mean(data$artist_count), digits = 3), "artisti per brano")
+```
+
+## Ascolti medi per numero di artisti
+
+```{r}
+# Grafico a barre che rappresenta il numero di artisti e numero di ascolti
+bar_streams_n_artists <- ggplot(data = streams_n_artists, aes(x = factor(N_artisti), y = Ascolti_medi)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  labs(x = "# artisti", y = "media streams") +
+  theme_light()
+
+bar_streams_n_artists
+```
+
+# Caratteristiche Acustiche
+
+## Bpm nei brani
+```{r}
+# Istogramma della dispersione di bpm per brano
+histogram_bpm <- ggplot(data = data, aes(x= bpm)) +
+  labs(x = "bpm", y= "# brani") +
+  geom_histogram(binwidth = 5, fill = "skyblue", color = "black", alpha = 0.7) + 
+  scale_x_continuous(breaks = seq(60, 210, by = 10)) +
+  theme_minimal()
+histogram_bpm
+
+```
+
+## Modalità delle canzoni
+```{r}
+# Grafico a torta della modalità
+perc_mode <- data %>% 
+  count(mode) %>% 
+  mutate(n = n/sum(n)*100)
+
+pie_mode <- ggplot(perc_mode, aes(x = "", y = n, fill = mode)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  labs(fill = "Modalità", x = "", y = "") +
+  geom_text(aes(label = paste0(round(n), "%")), position = position_stack(vjust = 0.5)) +
+  theme_void()
+
+pie_mode
+```
+
+## Tonalità delle canzoni
+```{r}
+# Grafico a torta della modalità
+perc_key <- data %>% 
+  filter(key != "") %>% 
+  count(key) %>%
+  mutate(n = n/sum(n)*100)
+  
+
+pie_key <- ggplot(perc_key, aes(x = "", y = n, fill = key)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  labs(fill = "Modalità", x = "", y = "") +
+  geom_text(aes(label = paste0(round(n), "%")), position = position_stack(vjust = 0.5)) +
+  theme_void()
+
+pie_key
+```
+
+## Moda del dataset
+```{r}
+#mode
+mode_mode <- data %>%
+  count(mode) %>% 
+  top_n(1, wt=n)
+cat("La modalità più comune è", mode_mode[1,1])
+#key
+key_mode <- data %>% 
+  filter(key != "") %>% 
+  count(key) %>% 
+  top_n(1, wt=n)
+cat("La chiave più comune è", key_mode[1,1])
+#bpm
+bpm_mode <- data %>% 
+  mutate("bpm5" = round(bpm/5)*5) %>% 
+  count(bpm5) %>% 
+  top_n(1, wt=n)
+cat("Il valore di bpm più comune (multipli di 5) è", bpm_mode[1,1])
+```
+Inoltre le combinazioni più comuni sono:
+```{r}
+global_mode <- data %>% 
+  filter(key != "") %>% 
+  mutate("bpm5" = round(bpm/5)*5) %>%
+  count(mode, key, bpm5) %>%
+  top_n(1, wt=n) %>%
+  select(
+    "Modalità  " = mode,
+    "Chiave  " = key, 
+    "Bpm  " = bpm5
+  )
+
+global_mode
+
+```
+
+## Valori medi 
+Si analizzano quindi la media di altre caratteristiche acustiche delle canzoni in lista 
+```{r}
+cat("Energia:", mean(data$energy_.), "%")
+cat("Valenza:", mean(data$valence_.), "%")
+cat("Acusticità:", mean(data$acousticness_.), "%")
+cat("Loquacità:", mean(data$speechiness_.), "%")
+cat("Vitalità:", mean(data$liveness_.), "%")
+cat("Ballabilità:", mean(data$danceability_.), "%")
+```
+
+## Andamento nel tempo
+```{r}
+emotions <- data %>%
+  select(energy_., valence_., acousticness_., speechiness_., liveness_., danceability_., instrumentalness_., streams,released_year) %>%
+  mutate("Anno_di_uscita" = round(released_year/5)*5) %>% 
+  group_by(Anno_di_uscita) %>%
+  summarise("Energia" = mean(energy_.),
+           "Valenza" = mean(valence_.),
+           "Acusticità" = mean(acousticness_.),
+           "Loquacità" = mean(speechiness_.),
+           "Vitalità" = mean(liveness_.),
+           "Ballabilità" = mean(danceability_.)) %>%
+  pivot_longer(cols = c(Energia, Valenza, Acusticità, Loquacità, Vitalità, Ballabilità), names_to = "Caratteristica", values_to = "Valore_medio")
+
+emotions_histogram <- ggplot(emotions) +
+  geom_line(aes(x = Anno_di_uscita, y = Valore_medio, color = Caratteristica)) +
+  labs(y = "% media", x = "anno") +
+  scale_y_continuous(breaks = seq(0, 100, by = 10)) +
+  scale_x_continuous(breaks = seq(1925, 2025, by = 10)) +
+  theme_light()
+
+emotions_histogram
+```
+
+# Analisi lessicale
+
+## Analisi dei titoli
+
+Di seguito viene presentata una nuvola di parole che rappresenta i termini più usati.
+
+```{r, echo=FALSE}
+regular_expression = "\\((feat|with|from|explicit)[^\\)]+\\)"
+
+titles <- data %>%
+  select(track_name) %>%
+  mutate(track_name = str_replace_all(track_name, regular_expression, ""))
+
+titles_collapsed <- paste(titles$track_name, collapse = " ")
+
+suppressWarnings(
+  wordcloud(words = titles_collapsed, min.freq = 4, random.order = FALSE)
+)
+```
+
+# Grafo delle collaborazioni
+
+## Tutti gli artisti
+
+```{r}
+
+
+  # definisco i nodi
+  nodi <- artists_colab %>%
+    pivot_longer(all_of(artists_col_names)) %>%
+    filter(!is.na(value)) %>% 
+    select(value) %>% 
+    distinct(value)
+  
+  # definisco gli archi
+  
+  df2 <- artists_colab %>% select(artist1, "featuring" = artist2) %>% filter(!is.na(featuring)) 
+  df3 <- artists_colab %>% select(artist1, "featuring" = artist3) %>% filter(!is.na(featuring)) 
+  df4 <- artists_colab %>% select(artist1, "featuring" = artist4) %>% filter(!is.na(featuring)) 
+  df5 <- artists_colab %>% select(artist1, "featuring" = artist5) %>% filter(!is.na(featuring)) 
+  df6 <- artists_colab %>% select(artist1, "featuring" = artist6) %>% filter(!is.na(featuring)) 
+  df7 <- artists_colab %>% select(artist1, "featuring" = artist7) %>% filter(!is.na(featuring)) 
+  df8 <- artists_colab %>% select(artist1, "featuring" = artist8) %>% filter(!is.na(featuring)) 
+
+  archi <- rbind(df2, df3, df4, df5, df6, df7, df8) %>%
+   mutate(
+    temp = pmin(artist1, featuring), 
+    featuring = pmax(artist1, featuring), 
+    artist1 = temp
+    )%>%
+    group_by(artist1, featuring) %>%
+    summarise("Count" = n(), .groups = "drop")
+  
+  # costruisco il grafo
+
+  grafo <- tbl_graph(nodes = nodi, edges = archi, directed = FALSE)
+  
+suppressWarnings({
+  img <-ggraph(grafo, layout = "fr") +
+    geom_edge_link(aes(linewidth = 1)) +  
+    geom_node_point(aes(linewidth = 1)) +
+    theme_graph()
+  print(img)
+})
+```
+```{r}
+
+connected_nodes <- archi %>%
+  pivot_longer(all_of(c("artist1", "featuring"))) %>%
+  distinct(value) %>%
+  select(value)
+
+cat("I nodi non connessi a nessun altro nodo sono", nrow(nodi) -nrow(connected_nodes), "su", nrow(nodi) )
+
+```
+
+
+## Componente gigante
+```{r}
+cgg <- induced_subgraph(grafo, which(components(grafo)$membership == which.max(components(grafo)$csize)))
+
+ggraph(cgg, layout = "fr") +
+  geom_edge_link() +
+  geom_node_point() +
+  theme_graph()
+```
+
+## Statistiche del grafo
+
+Grado
+```{r}
+degree <- degree(cgg)
+cat("Media:", mean(degree), "valore minimo", min(degree), "valore massimo", max(degree))
+```
+
+Betweenness
+```{r}
+betweenness <- betweenness(cgg)
+cat("Media:", mean(betweenness), "valore minimo", min(betweenness), "valore massimo", max(betweenness))
+```
+
+Closeness
+```{r}
+closeness <- closeness(cgg)
+cat("Media:", round(mean(closeness), digits = 5), "valore minimo", round(min(closeness), digits = 5), "valore massimo", round(max(closeness), digits = 5))
+```
+
+Diametro
+```{r}
+cat(diameter(cgg))
+```
+
+## Cluster
+```{r}
+c = cluster_leading_eigen(cgg)
+coords = layout_with_fr(cgg)
+plot(c, cgg, vertex.color = membership(c), layout = coords, vertex.size = 5, vertex.label = NA)
+```
+
+# Conclusioni
+
+## Miglioramenti futuri
+- Utilizzo di un dataset più aggiornato (kaggle)
+- Ampliare il dataset, inserendo un maggior numero di brani in modo da rendere il grafo delle collaborazioni più completo e migliorare le altre analisi
+
+# Grazie dell'attenzione!
